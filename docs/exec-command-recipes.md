@@ -73,3 +73,35 @@ If dependencies need network access, start with:
 ```bash
 coding-tools-mcp --permission-mode trusted --workspace /path/to/repo
 ```
+
+
+## Shared Cargo cache on Linux
+
+To reuse an existing manual Cargo build, configure the server process
+(not the command's environment argument). Example for an existing Rustup
+installation and workspace `/quick/outsidesol`; replace the account path
+and retain any existing read-only roots and PATH entries required by your
+installation:
+
+```bash
+export CODING_TOOLS_MCP_EXEC_WRITE_ROOTS=/home/dev/.cargo
+export CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS=/home/dev/.rustup
+export CODING_TOOLS_MCP_SHELL_ENV_SET='{"CARGO_HOME":"/home/dev/.cargo","RUSTUP_HOME":"/home/dev/.rustup","CARGO_TARGET_DIR":"/quick/outsidesol/target","PATH":"/home/dev/.cargo/bin:/usr/local/bin:/usr/bin:/bin"}'
+coding-tools-mcp --permission-mode safe --workspace /quick/outsidesol
+```
+
+The directories must already exist. Keep the manual build on the same
+Cargo home, Rust toolchain, target directory, profile, features, and
+compiler flags. Do not run `cargo clean` on a shared target. Run
+`cargo check --locked --offline` or `cargo build --locked --offline` from
+the workspace; Cargo may still build different artifacts for different
+commands or profiles. Rustup must already have the required toolchain
+installed; if the proxy tries to update Rustup state, use the installed
+toolchain's bin directory directly and match the manual toolchain.
+
+This setup grants access to the entire Cargo home, including executable
+shims, config and any stored credentials. Only use it with trusted
+workspaces/clients and a cache without secrets. Read the
+[external writable roots security notes](permission-modes.md#external-writable-roots-linux)
+before enabling it. Use an actual network sandbox if network isolation is
+required; safe mode's network command checks are not a firewall.

@@ -24,7 +24,7 @@ coding-tools-mcp --permission-mode safe --workspace /path/to/repo
 
 Local development mode. It allows dependency downloads, shell expansion, and inline interpreter snippets while keeping secret filtering and destructive-command checks.
 
-`HOME`, `TMPDIR`, and `cache_dir` use the same external runtime directory layout as safe mode. Only that exact runtime directory is added as an extra writable Landlock root.
+`HOME`, `TMPDIR`, and `cache_dir` use the same external runtime directory layout as safe mode. By default, only that exact runtime directory is added as an extra writable Landlock root.
 
 ```bash
 coding-tools-mcp --permission-mode trusted --workspace /path/to/repo
@@ -77,6 +77,35 @@ kernel, or `--permission-mode dangerous` — the mode is reported with
 `"enforced": false` and a warning in `server_info.workspace_mutation_policy`
 and in `check_exec_environment`; the server also prints a startup warning,
 rather than claiming a restriction that is not in force.
+
+## External writable roots (Linux)
+
+The server operator may set `CODING_TOOLS_MCP_EXEC_WRITE_ROOTS` to an
+`os.pathsep`-separated list of existing absolute directories (colon-separated
+on Linux). The default is empty. Each directory is resolved and checked at
+runtime construction. Files, missing directories, the filesystem root, and
+directories overlapping the workspace are rejected. Unlike
+`CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS`, which grants read/execute access, this
+setting grants read/write/execute access to those directories to
+`exec_command` and its children. It does not change direct file tools,
+the static command path checks, network policy, or the isolated HOME.
+
+Use safe or trusted mode with Landlock ABI 3 or newer. When external roots
+are configured, failure to install the ruleset blocks the command rather
+than falling back to an unconfined execution. The configured canonical
+directories are shown as `exec_write_roots` in `server_info` and
+`check_exec_environment`. In structured-only mode, workspace build output
+still requires the normal `--write-path` allowlist.
+
+**Security:** writable roots are a deliberate extension of command access.
+Commands can alter or delete their contents, including caches, executables,
+configuration and credentials. A shared package cache can affect later
+builds outside MCP. Grant only narrowly scoped directories for trusted
+projects and clients. Never grant an entire home directory or a system
+directory. Do not move or replace configured directories while the server
+is running. The setting is server-side, not a per-command permission.
+
+See [the shared Cargo example](exec-command-recipes.md#shared-cargo-cache-on-linux).
 
 ## Client-Side Annotation Gates
 
