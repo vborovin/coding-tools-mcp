@@ -1595,6 +1595,7 @@ class Runtime:
             )
         self.permission_mode = permission_mode
         self.capabilities = PERMISSION_MODE_CAPABILITIES[permission_mode]
+        self._exec_write_roots = self._resolve_exec_write_roots()
         self.dangerously_skip_all_permissions = self.capabilities.skip_all_permissions
         # Computed after the permission mode resolves: `gated_by` names a
         # runtime property, and one of the gates is the permission mode.
@@ -1785,8 +1786,51 @@ class Runtime:
     def landlock_enabled(self) -> bool:
         return self.capabilities.landlock
 
+    def _resolve_exec_write_roots(self) -> tuple[Path, ...]:
+        """Разрешенные оператором внешние каталоги только для exec_command."""
+        raw = os.environ.get(f"{ENV_PREFIX}_EXEC_WRITE_ROOTS", "")
+        roots: list[Path] = []
+        for entry in raw.split(os.pathsep):
+            if not entry.strip():
+                continue
+            try:
+                candidate = Path(entry).expanduser()
+                if not candidate.is_absolute():
+                    raise ValueError("expected an absolute path")
+                real = candidate.resolve(strict=True)
+                if not real.is_dir() or real == Path(real.anchor):
+                    raise ValueError("expected an existing non-root directory")
+                if is_relative_to(real, self.workspace.root) or is_relative_to(self.workspace.root, real):
+                    raise ValueError("directory must not overlap the workspace")
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ToolFailure(
+                    "INVALID_ARGUMENT",
+                    f"Invalid {ENV_PREFIX}_EXEC_WRITE_ROOTS entry: {entry}: {exc}",
+                    category="validation",
+                ) from exc
+            if real not in roots:
+                roots.append(real)
+        if roots and not self.landlock_enabled():
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                f"{ENV_PREFIX}_EXEC_WRITE_ROOTS requires safe or trusted permission mode.",
+                category="validation",
+            )
+        return tuple(roots)
+
     def landlock_write_roots(self) -> list[Path]:
-        roots = [self.runtime_dir]
+        # Не создавать внешние каталоги и не следовать изменившимся ссылкам.
+        for root in self._exec_write_roots:
+            try:
+                if root.resolve(strict=True) != root or not root.is_dir():
+                    raise ValueError("directory has changed")
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ToolFailure(
+                    "SANDBOX_UNAVAILABLE",
+                    f"Configured external write root is no longer valid: {root}",
+                    category="security",
+                ) from exc
+        roots = [self.runtime_dir, *self._exec_write_roots]
         if self.workspace_mutation.structured_only:
             roots.extend(self._ensure_workspace_write_paths())
         return roots
@@ -2001,6 +2045,7 @@ class Runtime:
             "home": str(self.command_home_dir()),
             "tmpdir": str(self.command_tmp_dir()),
             "cache_dir": str(self.cache_dir),
+            "exec_write_roots": [str(root) for root in self._exec_write_roots],
         }
 
     def _landlock_enforced(self, landlock: dict[str, Any]) -> bool:
@@ -3651,8 +3696,20 @@ class Runtime:
         popen_cmd: Any = cmd
         popen_shell = True
         popen_extra = process_group_popen_kwargs()
+        if self._exec_write_roots and not self.landlock_enabled():
+            raise ToolFailure(
+                "SANDBOX_UNAVAILABLE",
+                "External write roots require enabled Landlock.",
+                category="security",
+            )
         if self.landlock_enabled():
             try:
+                if self._exec_write_roots and landlock_abi_version() < 3:
+                    raise ToolFailure(
+                        "SANDBOX_UNAVAILABLE",
+                        "External write roots require Landlock ABI 3 or newer.",
+                        category="security",
+                    )
                 landlock_fd = open_landlock_ruleset(
                     self.workspace.root,
                     guard_allow_roots(),
@@ -3664,7 +3721,7 @@ class Runtime:
                 popen_extra["pass_fds"] = (landlock_fd,)
                 landlock_confined = True
             except ToolFailure as exc:
-                if exc.code != "SANDBOX_UNAVAILABLE":
+                if exc.code != "SANDBOX_UNAVAILABLE" or self._exec_write_roots:
                     raise
                 landlock_warning = landlock_unavailable_warning(exc)
         mutation = self.workspace_mutation_payload()
@@ -5647,7 +5704,7 @@ def open_landlock_ruleset(
             ruleset_fd, workspace, workspace_access if workspace_writable else readonly_access
         )
         for write_root in write_roots or []:
-            add_landlock_path(ruleset_fd, write_root, workspace_access, required=False)
+            add_landlock_path(ruleset_fd, write_root, workspace_access)
         for read_root in read_roots:
             add_landlock_path(ruleset_fd, Path(read_root), readonly_access, required=False)
         for special in SPECIAL_DEVICE_PATHS:

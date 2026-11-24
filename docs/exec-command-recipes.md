@@ -73,3 +73,49 @@ If dependencies need network access, start with:
 ```bash
 coding-tools-mcp --permission-mode trusted --workspace /path/to/repo
 ```
+
+
+## Shared Cargo cache on Linux
+
+To reuse an existing manual Cargo build, configure the server process
+(not the command's environment argument). Example for an existing Rustup
+installation and workspace `/quick/outsidesol`; replace the account path
+and retain any existing read-only roots and PATH entries required by your
+installation:
+
+```bash
+export CODING_TOOLS_MCP_EXEC_WRITE_ROOTS=/home/dev/.cargo
+export CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS=/home/dev/.rustup
+export CODING_TOOLS_MCP_SHELL_ENV_SET='{"CARGO_HOME":"/home/dev/.cargo","RUSTUP_HOME":"/home/dev/.rustup","CARGO_TARGET_DIR":"/quick/outsidesol/target","PATH":"/usr/bin:/bin"}'
+coding-tools-mcp --permission-mode safe --workspace /quick/outsidesol
+```
+
+The directories must already exist. Keep the manual build on the same
+Cargo home, Rust toolchain, target directory, profile, features, and
+compiler flags. Do not run `cargo clean` on a shared target.
+
+**Keep the Rustup proxy shims on `PATH`.** On systems that provide them in
+`/usr/bin`, the example above uses those shims. If they are installed in
+`$CARGO_HOME/bin` or `~/.cargo/bin` instead, put that directory first on
+`PATH` and add it to `CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS` so Landlock permits
+reading and executing the shims. Do not put
+`$RUSTUP_HOME/toolchains/<toolchain>/bin` ahead of the proxies: invoking
+the toolchain binaries directly bypasses the project's
+`rust-toolchain.toml` override and can make Cargo use a different compiler
+from the manual build.
+
+Rustup must already have the required toolchain installed. Keep
+`RUSTUP_HOME` readable by exec, and grant write access only to the Cargo
+home when Cargo needs to update its registry or build cache. Use the same
+Cargo command/profile when measuring artifact reuse: `cargo check`,
+`cargo test`, `cargo clippy`, and `cargo build` can legitimately produce
+different artifact kinds or profiles. For example, `cargo check` creates
+metadata-only artifacts and is not a substitute for checking whether
+`cargo test` or `cargo build` can reuse their existing outputs.
+
+This setup grants access to the entire Cargo home, including executable
+shims, config and any stored credentials. Only use it with trusted
+workspaces/clients and a cache without secrets. Read the
+[external writable roots security notes](permission-modes.md#external-writable-roots-linux)
+before enabling it. Use an actual network sandbox if network isolation is
+required; safe mode's network command checks are not a firewall.
